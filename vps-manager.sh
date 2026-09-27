@@ -13,7 +13,7 @@ NC='\033[0m'
 
 # --- LICENCIA / KEY -------------------------------------------
 # El SECRET debe ser el mismo que en keygen.py
-SECRET_KEY='Pitu5811*'
+SECRET_KEY='Copiaesta**'
 KEY_FILE='/etc/vps-manager.key'
 PREFIJO_KEY='VPSJB1'   # prefijo de marca; tambien acepta keys viejas VPSMGR1
 # URL del script en TU repo (para la opcion de auto-update)
