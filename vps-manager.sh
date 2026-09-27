@@ -17,7 +17,7 @@ SECRET_KEY='Pitu5811*'
 KEY_FILE='/etc/vps-manager.key'
 PREFIJO_KEY='VPSJB1'   # prefijo de marca; tambien acepta keys viejas VPSMGR1
 # URL del script en TU repo (para la opcion de auto-update)
-REPO_RAW='https://raw.githubusercontent.com/pftubarios/vps-manager/refs/heads/main/vps-manager.sh'
+REPO_RAW='https://raw.githubusercontent.com/pitubarrios/vps-manager/refs/heads/main/vps-manager.sh'
 
 machine_hash(){
     if [[ -f /etc/machine-id ]]; then
@@ -783,3 +783,4 @@ while true; do
         *) ERR "Opcion invalida."; sleep 1 ;;
     esac
 done
+
