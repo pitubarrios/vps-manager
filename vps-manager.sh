@@ -21,7 +21,7 @@ REPO_RAW='https://raw.githubusercontent.com/pitubarrios/vps-manager/refs/heads/m
 # --- VALIDACION ONLINE (opcional) ---
 # Pone aca la URL de tu Worker de Cloudflare. Vacio = validacion offline (firma local).
 LICENSE_URL=''
-GRACE_SECS=259200                      # 72h de gracia si el servidor no responde
+GRACE_SECS=259200                      # 6h de gracia si el servidor no responde
 LICENSE_CACHE='/etc/vps-license.cache'
 
 machine_hash(){
@@ -954,6 +954,177 @@ estado_protocolos(){
 }
 
 # ------------------------------------------------------------
+# TRAFICO POR USUARIO (iptables)
+# ------------------------------------------------------------
+trafico_activar(){
+    iptables -N VPS-TRAFFIC 2>/dev/null
+    iptables -F VPS-TRAFFIC 2>/dev/null
+    local N=0 U
+    for U in $(awk -F: '$3>=1000 && $1!="nobody"{print $1}' /etc/passwd); do
+        iptables -A VPS-TRAFFIC -m owner --uid-owner "$U" -j RETURN 2>/dev/null && N=$((N+1))
+    done
+    iptables -C OUTPUT -j VPS-TRAFFIC 2>/dev/null || iptables -A OUTPUT -j VPS-TRAFFIC 2>/dev/null
+    [[ $N -gt 0 ]] && OK "Contadores activos para $N usuarios (se suman usuarios nuevos al re-activar)." \
+                   || ERR "No se pudieron crear reglas (iptables fallo?)."
+    PAUSA
+}
+
+trafico_ver(){
+    echo -e "${CIAN}--- CONSUMO POR USUARIO (desde el ultimo reset) ---${NC}"
+    printf "%-16s %-12s %s\n" "USUARIO" "USADO" "LIMITE(GB)"
+    iptables -L VPS-TRAFFIC -v -x -n 2>/dev/null | awk '/owner UID match/ {print $2, $NF}' | while read -r BYTES UIDN; do
+        local U MB LIM
+        U=$(id -un "$UIDN" 2>/dev/null || echo "uid$UIDN")
+        MB=$(( BYTES / 1048576 ))
+        LIM=$(cat "/etc/vps-trafico/$U" 2>/dev/null || echo "-")
+        printf "%-16s %7d MB   %s\n" "$U" "$MB" "$LIM"
+    done
+    echo
+    INFO "Para medir desde cero, usa la opcion 'reset' del menu de trafico."
+    PAUSA
+}
+
+trafico_limite(){
+    read -r -p "Usuario: " USU
+    id "$USU" >/dev/null 2>&1 || { ERR "No existe."; PAUSA; return; }
+    read -r -p "Limite en GB (0 = sin limite): " G
+    [[ "$G" =~ ^[0-9]+$ ]] || { ERR "Numero invalido."; PAUSA; return; }
+    mkdir -p /etc/vps-trafico
+    echo "$G" > "/etc/vps-trafico/$USU"
+    OK "Limite de $USU = ${G}GB."
+    PAUSA
+}
+
+trafico_cortar(){
+    local CORTADOS=0
+    for F in /etc/vps-trafico/*; do
+        [[ -f "$F" ]] || continue
+        local U G USED
+        U=$(basename "$F"); G=$(cat "$F")
+        [[ "$G" =~ ^[0-9]+$ && "$G" -gt 0 ]] || continue
+        USED=$(iptables -L VPS-TRAFFIC -v -x -n 2>/dev/null | awk -v uid="$(id -u "$U" 2>/dev/null)" '$0 ~ "owner UID match "uid {print $2; exit}')
+        [[ -n "$USED" && $(( USED / 1073741824 )) -ge "$G" ]] || continue
+        if ! passwd -S "$U" 2>/dev/null | grep -q ' L '; then
+            usermod -L "$U" 2>/dev/null; pkill -u "$U" 2>/dev/null
+            INFO "$U supero su limite (${G}GB) y fue bloqueado."
+            CORTADOS=$((CORTADOS+1))
+        fi
+    done
+    [[ $CORTADOS -eq 0 ]] && OK "Nadie supero su limite." || OK "Bloqueados: $CORTADOS."
+    PAUSA
+}
+
+trafico_reset(){
+    iptables -Z VPS-TRAFFIC 2>/dev/null && OK "Contadores en cero." || ERR "La cadena no existe (activa antes)."
+    PAUSA
+}
+
+menu_trafico(){
+    while true; do
+        cabecera
+        echo -e "${BLANCO}================ TRAFICO POR USUARIO ================${NC}"
+        echo -e " [1] Activar contadores"
+        echo -e " [2] Ver consumo"
+        echo -e " [3] Poner limite (GB) a un usuario"
+        echo -e " [4] Cortar usuarios que superaron el limite"
+        echo -e " [5] Resetear contadores"
+        echo -e " [0] Volver"
+        read -r -p " Opcion > " OP
+        case "$OP" in
+            1) trafico_activar ;;
+            2) trafico_ver ;;
+            3) trafico_limite ;;
+            4) trafico_cortar ;;
+            5) trafico_reset ;;
+            0) break ;;
+            *) ERR "Opcion invalida."; sleep 1 ;;
+        esac
+    done
+}
+
+# ------------------------------------------------------------
+# SWAP / HYSTERIA2 / RESTORE
+# ------------------------------------------------------------
+agregar_swap(){
+    if swapon --show 2>/dev/null | grep -q '/swapfile'; then
+        ERR "Ya hay una swapfile activa."; PAUSA; return
+    fi
+    read -r -p "Tamaño del swap en GB [1]: " G; G=${G:-1}
+    [[ "$G" =~ ^[0-9]+$ && "$G" -ge 1 ]] || { ERR "Tamaño invalido."; PAUSA; return; }
+    INFO "Creando swap de ${G}GB..."
+    fallocate -l "${G}G" /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=$((G*1024)) status=none
+    chmod 600 /swapfile
+    mkswap /swapfile >/dev/null 2>&1
+    swapon /swapfile 2>/dev/null
+    if swapon --show 2>/dev/null | grep -q '/swapfile'; then
+        grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+        OK "Swap de ${G}GB activa y persistente."
+    else
+        rm -f /swapfile
+        ERR "No se pudo activar la swap."
+    fi
+    PAUSA
+}
+
+instalar_hysteria(){
+    if command -v hysteria >/dev/null 2>&1; then
+        read -r -p "Hysteria2 ya esta instalado. Reconfigurar? (s/n): " SN
+        [[ "$SN" != "s" ]] && { PAUSA; return; }
+    fi
+    echo -e "${CIAN}--- INSTALADOR HYSTERIA2 (UDP) ---${NC}"
+    read -r -p "Puerto UDP [8443]: " HP; HP=${HP:-8443}
+    [[ "$HP" =~ ^[0-9]+$ && "$HP" -ge 1 && "$HP" -le 65535 ]] || { ERR "Puerto invalido."; PAUSA; return; }
+    INFO "Instalando Hysteria2..."
+    bash <(curl -fsSL https://get.hy2.sh/) >/dev/null 2>&1 \
+        || { ERR "No se pudo instalar (sin red?)."; PAUSA; return; }
+    mkdir -p /etc/hysteria
+    openssl req -x509 -nodes -newkey rsa:2048 -days 3650 -subj "/CN=vps-jorgebarrios" \
+        -keyout /etc/hysteria/server.key -out /etc/hysteria/server.crt >/dev/null 2>&1
+    local PASS; PASS=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 20)
+    cat > /etc/hysteria/config.yaml <<HEOF
+listen: :$HP
+auth:
+  type: password
+  password: "$PASS"
+tls:
+  cert: /etc/hysteria/server.crt
+  key: /etc/hysteria/server.key
+HEOF
+    ufw allow "$HP/udp" >/dev/null 2>&1
+    systemctl enable --now hysteria-server >/dev/null 2>&1
+    sleep 1
+    local IP; IP=$(hostname -I | awk '{print $1}')
+    if systemctl is-active --quiet hysteria-server 2>/dev/null || pgrep -x hysteria >/dev/null 2>&1; then
+        OK "Hysteria2 corriendo en UDP $HP"
+        echo
+        echo -e " ${AMARILLO}Enlace para el cliente (NekoBox / tu app):${NC}"
+        echo -e " ${VERDE}hysteria2://$PASS@$IP:$HP/?insecure=1#VPS-JORGEBARRIOS${NC}"
+    else
+        ERR "Hysteria no levanto. Revisa: journalctl -u hysteria-server"
+    fi
+    PAUSA
+}
+
+restaurar_backup(){
+    local DIR=/root/backups
+    echo -e "${CIAN}--- BACKUPS DISPONIBLES ---${NC}"
+    ls -lh "$DIR"/*.tar.gz 2>/dev/null || { ERR "No hay backups en $DIR."; PAUSA; return; }
+    read -r -p "Archivo a restaurar (nombre exacto, Enter = el mas reciente): " F
+    [[ -z "$F" ]] && F=$(ls -t "$DIR"/*.tar.gz 2>/dev/null | head -1)
+    [[ -f "$F" ]] || F="$DIR/$F"
+    [[ -f "$F" ]] || { ERR "Archivo no encontrado."; PAUSA; return; }
+    echo
+    echo -e "${ROJO}ATENCION: esto pisa la configuracion actual de /etc${NC}"
+    echo -e "${ROJO}(incluye usuarios, claves y la key de licencia).${NC}"
+    read -r -p "Escribi RESTAURAR para confirmar: " CONF
+    [[ "$CONF" != "RESTAURAR" ]] && { ERR "Cancelado."; PAUSA; return; }
+    INFO "Restaurando $F ..."
+    tar xzf "$F" -C / 2>/dev/null
+    OK "Restaurado. Recomendado: reiniciar el VPS (opcion 32)."
+    PAUSA
+}
+
+# ------------------------------------------------------------
 # MENU PRINCIPAL
 # ------------------------------------------------------------
 [[ $EUID -ne 0 ]] && { echo -e "${ROJO}Ejecuta como root o con sudo.${NC}"; exit 1; }
@@ -990,6 +1161,10 @@ while true; do
     echo -e "${BLANCO}--------- PROTOCOLOS / CONEXIONES ---------------------${NC}"
     FILA 33 "Xray (VLESS + Reality)" 34 "OpenVPN"
     FILA 35 "Estado de protocolos"   36 "SSL (Stunnel puerto 443)"
+    echo
+    echo -e "${BLANCO}--------- RECURSOS / DATOS / RECUPERACION ------------${NC}"
+    FILA 37 "Trafico por usuario (GB)" 38 "Agregar swap"
+    FILA 39 "Hysteria2 (UDP)"          40 "Restaurar backup"
     echo
     echo -e " ${AZUL}[0]${NC}  Salir"
     echo
@@ -1031,6 +1206,10 @@ while true; do
         34) instalar_openvpn ;;
         35) estado_protocolos ;;
         36) instalar_ssl_stunnel ;;
+        37) menu_trafico ;;
+        38) agregar_swap ;;
+        39) instalar_hysteria ;;
+        40) restaurar_backup ;;
         0) echo -e "${VERDE}Hasta luego!${NC}"; exit 0 ;;
         *) ERR "Opcion invalida."; sleep 1 ;;
     esac
