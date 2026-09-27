@@ -18,6 +18,11 @@ KEY_FILE='/etc/vps-manager.key'
 PREFIJO_KEY='VPSJB1'   # prefijo de marca; tambien acepta keys viejas VPSMGR1
 # URL del script en TU repo (para la opcion de auto-update)
 REPO_RAW='https://raw.githubusercontent.com/pitubarrios/vps-manager/refs/heads/main/vps-manager.sh'
+# --- VALIDACION ONLINE (opcional) ---
+# Pone aca la URL de tu Worker de Cloudflare. Vacio = validacion offline (firma local).
+LICENSE_URL=''
+GRACE_SECS=259200                      # 72h de gracia si el servidor no responde
+LICENSE_CACHE='/etc/vps-license.cache'
 
 machine_hash(){
     if [[ -f /etc/machine-id ]]; then
@@ -49,16 +54,75 @@ validar_key(){
     return 0
 }
 
-gate_licencia(){
-    local INTENTOS=0 K
-    if [[ -f "$KEY_FILE" ]] && validar_key "$(cat "$KEY_FILE" 2>/dev/null)"; then
-        LICENSE_OK="$KEY_NOMBRE"; return 0
+consultar_licencia(){
+    # Modo online: pregunta al Worker de Cloudflare.
+    # Devuelve: 0 valida / 1 invalida / 2 servidor sin respuesta
+    local KEY="$1" RESP
+    [[ -z "$LICENSE_URL" ]] && return 2
+    RESP=$(curl -G -fsS --max-time 10 "$LICENSE_URL" \
+        --data-urlencode "key=$KEY" --data-urlencode "id=$(machine_hash)" 2>/dev/null)
+    [[ -z "$RESP" ]] && return 2
+    if echo "$RESP" | grep -q '"valid":[[:space:]]*true'; then
+        LICENSE_NOMBRE=$(echo "$RESP" | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+        LICENSE_DIAS=$(echo "$RESP" | grep -o '"days_left"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$')
+        return 0
     fi
+    return 1
+}
+
+gate_licencia(){
+    local INTENTOS=0 K RC
     echo -e "${AMARILLO}============================================================${NC}"
     echo -e "${AMARILLO}  LICENCIA REQUERIDA - VPS-JORGEBARRIOS${NC}"
     echo -e "${AMARILLO}============================================================${NC}"
     echo -e " ID de este servidor: ${BLANCO}$(machine_hash)${NC}"
+
+    if [[ -n "$LICENSE_URL" ]]; then
+        # ---------------- MODO ONLINE ----------------
+        INFO "Validacion online activa."
+        if [[ -f "$KEY_FILE" ]]; then
+            K=$(cat "$KEY_FILE" 2>/dev/null)
+            consultar_licencia "$K"; RC=$?
+            if [[ $RC -eq 0 ]]; then
+                date +%s > "$LICENSE_CACHE" 2>/dev/null
+                LICENSE_OK="${LICENSE_NOMBRE:-cliente}"
+                [[ -n "${LICENSE_DIAS:-}" ]] && LICENSE_EXP=$(( $(date +%s) + LICENSE_DIAS * 86400 ))
+                return 0
+            elif [[ $RC -eq 2 ]]; then
+                if [[ -f "$LICENSE_CACHE" ]] && (( $(date +%s) - $(cat "$LICENSE_CACHE" 2>/dev/null || echo 0) < GRACE_SECS )); then
+                    LICENSE_OK="modo gracia (servidor caido)"
+                    return 0
+                fi
+                ERR "Servidor de licencias no responde y no hay gracia acumulada."
+            fi
+        fi
+        while [[ $INTENTOS -lt 3 ]]; do
+            read -r -p " INGRESE SU KEY > " K
+            consultar_licencia "$K"; RC=$?
+            if [[ $RC -eq 0 ]]; then
+                echo "$K" > "$KEY_FILE" 2>/dev/null
+                date +%s > "$LICENSE_CACHE" 2>/dev/null
+                LICENSE_OK="${LICENSE_NOMBRE:-cliente}"
+                [[ -n "${LICENSE_DIAS:-}" ]] && LICENSE_EXP=$(( $(date +%s) + LICENSE_DIAS * 86400 ))
+                OK "Licencia aceptada. Bienvenido, ${LICENSE_OK}."
+                sleep 1
+                return 0
+            elif [[ $RC -eq 2 ]]; then
+                ERR "Servidor de licencias no responde. Intenta mas tarde."
+            else
+                ERR "Key invalida, expirada, revocada o de otro servidor."
+            fi
+            INTENTOS=$((INTENTOS+1))
+        done
+        echo -e "${ROJO}Sin licencia valida. Contacta al administrador.${NC}"
+        exit 1
+    fi
+
+    # ---------------- MODO OFFLINE (firma local) ----------------
     echo -e " (usa ese ID con --bind para atar la key a este VPS)\n"
+    if [[ -f "$KEY_FILE" ]] && validar_key "$(cat "$KEY_FILE" 2>/dev/null)"; then
+        LICENSE_OK="$KEY_NOMBRE"; LICENSE_EXP="$KEY_EXP"; return 0
+    fi
     while [[ $INTENTOS -lt 3 ]]; do
         read -r -p " INGRESE SU KEY > " K
         if validar_key "$K"; then
@@ -783,4 +847,5 @@ while true; do
         *) ERR "Opcion invalida."; sleep 1 ;;
     esac
 done
+
 
