@@ -59,7 +59,7 @@ consultar_licencia(){
     # Devuelve: 0 valida / 1 invalida / 2 servidor sin respuesta
     local KEY="$1" RESP
     [[ -z "$LICENSE_URL" ]] && return 2
-    RESP=$(curl -G -fsS --max-time 10 "$LICENSE_URL" \
+    RESP=$(curl -G -fsS --max-time 10 -A "Mozilla/5.0" "$LICENSE_URL" \
         --data-urlencode "key=$KEY" --data-urlencode "id=$(machine_hash)" 2>/dev/null)
     [[ -z "$RESP" ]] && return 2
     if echo "$RESP" | grep -q '"valid":[[:space:]]*true'; then
@@ -847,5 +847,3 @@ while true; do
         *) ERR "Opcion invalida."; sleep 1 ;;
     esac
 done
-
-
