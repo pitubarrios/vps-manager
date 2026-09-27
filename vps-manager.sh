@@ -775,6 +775,18 @@ menu_checkuser(){
     done
 }
 
+reiniciar_vps(){
+    read -r -p "Reiniciar el VPS ahora? Los servicios caeran. (s/n): " SN
+    if [[ "$SN" == "s" ]]; then
+        WARN "Reiniciando en 3 segundos..."
+        sleep 3
+        reboot
+    else
+        OK "Reinicio cancelado."
+        PAUSA
+    fi
+}
+
 # ------------------------------------------------------------
 # MENU PRINCIPAL
 # ------------------------------------------------------------
@@ -807,7 +819,7 @@ while true; do
     echo -e " ${AZUL}[25]${NC} Eliminar vencidos       ${AZUL}[28]${NC} Quitar auto-menu"
     echo -e " ${AZUL}[26]${NC} Mantenimiento           ${AZUL}[29]${NC} Cambiar limite usuario"
     echo -e " ${AZUL}[30]${NC} Diagnostico del servidor"
-    echo -e " ${AZUL}[31]${NC} CheckUser API (apps cliente)"
+    echo -e " ${AZUL}[31]${NC} CheckUser API (apps cliente) ${AZUL}[32]${NC} Reiniciar VPS"
     echo -e " ${AZUL}[0]${NC} Salir"
     echo
     read -r -p " INFORME UNA OPCION > " OP
@@ -843,6 +855,7 @@ while true; do
         29) cambiar_limite ;;
         30) diagnostico ;;
         31) menu_checkuser ;;
+        32) reiniciar_vps ;;
         0) echo -e "${VERDE}Hasta luego!${NC}"; exit 0 ;;
         *) ERR "Opcion invalida."; sleep 1 ;;
     esac
