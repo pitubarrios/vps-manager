@@ -13,7 +13,7 @@ NC='\033[0m'
 
 # --- LICENCIA / KEY -------------------------------------------
 # El SECRET debe ser el mismo que en keygen.py
-SECRET_KEY='Copiaesta**'
+SECRET_KEY='cambia-esta-clave-super-secreta-2026'
 KEY_FILE='/etc/vps-manager.key'
 PREFIJO_KEY='VPSJB1'   # prefijo de marca; tambien acepta keys viejas VPSMGR1
 # URL del script en TU repo (para la opcion de auto-update)
@@ -140,6 +140,13 @@ gate_licencia(){
 }
 
 PAUSA(){ echo -e "\n${AMARILLO}Presiona ENTER para continuar...${NC}"; read -r; }
+FILA(){
+    if [[ -n "$3" ]]; then
+        printf " ${AZUL}[%-2s]${NC} %-26s ${AZUL}[%-2s]${NC} %s\n" "$1" "$2" "$3" "$4"
+    else
+        printf " ${AZUL}[%-2s]${NC} %s\n" "$1" "$2"
+    fi
+}
 OK(){ echo -e "${VERDE}[OK]${NC} $1"; }
 ERR(){ echo -e "${ROJO}[ERROR]${NC} $1"; }
 INFO(){ echo -e "${CIAN}[INFO]${NC} $1"; }
@@ -788,6 +795,165 @@ reiniciar_vps(){
 }
 
 # ------------------------------------------------------------
+# PROTOCOLOS / CONEXIONES (Xray, OpenVPN)
+# ------------------------------------------------------------
+instalar_xray(){
+    if command -v xray >/dev/null 2>&1; then
+        read -r -p "Xray ya esta instalado. Reinstalar/configurar de nuevo? (s/n): " SN
+        [[ "$SN" != "s" ]] && { PAUSA; return; }
+    fi
+    echo -e "${CIAN}--- INSTALADOR XRAY (VLESS + REALITY) ---${NC}"
+    read -r -p "Puerto para Xray [8443]: " XP; XP=${XP:-8443}
+    [[ "$XP" =~ ^[0-9]+$ && "$XP" -ge 1 && "$XP" -le 65535 ]] || { ERR "Puerto invalido."; PAUSA; return; }
+    read -r -p "SNI (dominio camuflaje) [www.microsoft.com]: " SNI; SNI=${SNI:-www.microsoft.com}
+
+    INFO "Instalando Xray (descarga oficial)..."
+    bash -c "$(curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install >/dev/null 2>&1 \
+        || { ERR "No se pudo instalar Xray (sin red?)."; PAUSA; return; }
+
+    local KEYS UUID
+    KEYS=$(xray x25519 2>/dev/null)
+    local PRIV PUB
+    PRIV=$(echo "$KEYS" | awk '/Private/{print $3}')
+    PUB=$(echo "$KEYS"  | awk '/Public/{print $3}')
+    UUID=$(xray uuid)
+    [[ -z "$PRIV" || -z "$PUB" || -z "$UUID" ]] && { ERR "No se pudieron generar las claves."; PAUSA; return; }
+
+    mkdir -p /usr/local/etc/xray
+    cat > /usr/local/etc/xray/config.json <<XEOF
+{
+  "log": { "loglevel": "warning" },
+  "inbounds": [{
+    "port": $XP,
+    "protocol": "vless",
+    "settings": {
+      "clients": [{ "id": "$UUID", "flow": "xtls-rprx-vision" }],
+      "decryption": "none"
+    },
+    "streamSettings": {
+      "network": "tcp",
+      "security": "reality",
+      "realitySettings": {
+        "show": false,
+        "dest": "$SNI:443",
+        "xver": 0,
+        "serverNames": ["$SNI"],
+        "privateKey": "$PRIV",
+        "shortIds": [""]
+      }
+    },
+    "sniffing": { "enabled": true, "destOverride": ["http", "tls"] }
+  }],
+  "outbounds": [{ "protocol": "freedom" }]
+}
+XEOF
+
+    ufw allow "$XP/tcp" >/dev/null 2>&1
+    systemctl enable --now xray 2>/dev/null || { /usr/local/bin/xray run -c /usr/local/etc/xray/config.json & }
+    sleep 2
+    local IP; IP=$(hostname -I | awk '{print $1}')
+    local LINK="vless://$UUID@$IP:$XP?security=reality&encryption=none&pbk=$PUB&fp=chrome&sni=$SNI&flow=xtls-rprx-vision&sid=#VPS-JORGEBARRIOS"
+    OK "Xray corriendo en el puerto $XP"
+    echo
+    echo -e " ${AMARILLO}Enlace para tu app (VLESS + Reality):${NC}"
+    echo -e " ${VERDE}$LINK${NC}"
+    echo
+    INFO "Guarda ese enlace: es la config que importas en el cliente (v2rayNG / tu app)."
+    PAUSA
+}
+
+instalar_openvpn(){
+    if command -v openvpn >/dev/null 2>&1; then
+        ERR "OpenVPN ya esta instalado."; PAUSA; return
+    fi
+    INFO "Descargando instalador de OpenVPN..."
+    curl -fsSL -o /root/openvpn-install.sh https://raw.githubusercontent.com/angristan/openvpn-install/master/openvpn-install.sh \
+        || { ERR "Sin red, no se pudo descargar."; PAUSA; return; }
+    chmod +x /root/openvpn-install.sh
+    INFO "Arrancando instalador (configuralo con los valores que quieras)..."
+    AUTO_INSTALL=y bash /root/openvpn-install.sh
+    OK "Listo. El archivo .ovpn del cliente queda en /root/"
+    PAUSA
+}
+
+instalar_ssl_stunnel(){
+    if command -v stunnel4 >/dev/null 2>&1 || command -v stunnel >/dev/null 2>&1; then
+        read -r -p "Stunnel ya esta instalado. Reconfigurar? (s/n): " SN
+        [[ "$SN" != "s" ]] && { PAUSA; return; }
+    fi
+    echo -e "${CIAN}--- INSTALADOR SSL (STUNNEL) ---${NC}"
+    read -r -p "Puerto SSL [443]: " SP; SP=${SP:-443}
+    [[ "$SP" =~ ^[0-9]+$ && "$SP" -ge 1 && "$SP" -le 65535 ]] || { ERR "Puerto invalido."; PAUSA; return; }
+    read -r -p "Puerto SSH destino [22]: " SSHP; SSHP=${SSHP:-22}
+
+    INFO "Instalando stunnel4..."
+    apt update -y >/dev/null 2>&1
+    apt install -y stunnel4 >/dev/null 2>&1 || { ERR "No se pudo instalar stunnel4."; PAUSA; return; }
+
+    INFO "Generando certificado autofirmado (10 años)..."
+    openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+        -subj "/CN=vps-jorgebarrios" \
+        -keyout /etc/stunnel/stunnel.key -out /etc/stunnel/stunnel.crt >/dev/null 2>&1
+    cat /etc/stunnel/stunnel.crt /etc/stunnel/stunnel.key > /etc/stunnel/stunnel.pem 2>/dev/null
+
+    cat > /etc/stunnel/stunnel.conf <<SEOF
+pid = /var/run/stunnel4.pid
+cert = /etc/stunnel/stunnel.pem
+client = no
+socket = a:SO_REUSEADDR=1
+
+[ssh-ssl]
+accept = $SP
+connect = 127.0.0.1:$SSHP
+SEOF
+
+    sed -i 's/^ENABLED=.*/ENABLED=1/' /etc/default/stunnel4 2>/dev/null
+    ufw allow "$SP/tcp" >/dev/null 2>&1
+    systemctl restart stunnel4 2>/dev/null || service stunnel4 restart 2>/dev/null
+    sleep 1
+    local IP; IP=$(hostname -I | awk '{print $1}')
+    if pgrep -f stunnel >/dev/null 2>&1; then
+        OK "Stunnel ACTIVO: SSL en el puerto $SP -> SSH local $SSHP"
+        echo
+        echo -e " ${AMARILLO}Datos para la config del cliente (HTTP Injector / tu app):${NC}"
+        echo -e "  IP/Host: ${VERDE}$IP${NC}   Puerto SSL: ${VERDE}$SP${NC}"
+        echo -e "  La app debe conectar por SSL/TLS al $SP y el trafico sale por SSH ($SSHP)."
+    else
+        ERR "Stunnel no levanto. Revisa con: systemctl status stunnel4"
+    fi
+    PAUSA
+}
+
+estado_protocolos(){
+    echo -e "${CIAN}--- PROTOCOLOS ---${NC}"
+    if command -v xray >/dev/null 2>&1; then
+        local PUERTO; PUERTO=$(grep -o '"port": [0-9]*' /usr/local/etc/xray/config.json 2>/dev/null | head -1 | grep -o '[0-9]*')
+        if pgrep -x xray >/dev/null 2>&1 || systemctl is-active --quiet xray 2>/dev/null; then
+            echo -e " Xray:   ${VERDE}ACTIVO${NC} (puerto ${PUERTO:-?})"
+        else
+            echo -e " Xray:   ${AMARILLO}instalado, detenido${NC}"
+        fi
+    else
+        echo -e " Xray:   ${ROJO}no instalado${NC}"
+    fi
+    if command -v stunnel4 >/dev/null 2>&1 || pgrep -f stunnel >/dev/null 2>&1; then
+        local SPORT; SPORT=$(grep -A1 'ssh-ssl' /etc/stunnel/stunnel.conf 2>/dev/null | grep -o 'accept = [0-9]*' | grep -o '[0-9]*')
+        pgrep -f stunnel >/dev/null 2>&1 \
+            && echo -e " Stunnel (SSL): ${VERDE}ACTIVO${NC} (puerto ${SPORT:-?})" \
+            || echo -e " Stunnel (SSL): ${AMARILLO}instalado, detenido${NC}"
+    else
+        echo -e " Stunnel (SSL): ${ROJO}no instalado${NC}"
+    fi
+    if command -v openvpn >/dev/null 2>&1; then
+        systemctl is-active --quiet openvpn-server@server 2>/dev/null \
+            && echo -e " OpenVPN: ${VERDE}ACTIVO${NC}" || echo -e " OpenVPN: ${AMARILLO}instalado, detenido${NC}"
+    else
+        echo -e " OpenVPN: ${ROJO}no instalado${NC}"
+    fi
+    PAUSA
+}
+
+# ------------------------------------------------------------
 # MENU PRINCIPAL
 # ------------------------------------------------------------
 [[ $EUID -ne 0 ]] && { echo -e "${ROJO}Ejecuta como root o con sudo.${NC}"; exit 1; }
@@ -797,30 +963,35 @@ gate_licencia
 while true; do
     cabecera
     echo -e "${BLANCO}--------- GESTION DE USUARIOS / SSH / SISTEMA ---------${NC}"
-    echo -e " ${AZUL}[1]${NC} Crear usuario SSH      ${AZUL}[6]${NC}  Listar usuarios"
-    echo -e " ${AZUL}[2]${NC} Cambiar clave          ${AZUL}[7]${NC}  Conexiones online"
-    echo -e " ${AZUL}[3]${NC} Bloquear/Desbloquear   ${AZUL}[8]${NC}  Desconectar usuario"
-    echo -e " ${AZUL}[4]${NC} Eliminar usuario       ${AZUL}[9]${NC}  Banner SSH"
-    echo -e " ${AZUL}[5]${NC} Renovar usuario        ${AZUL}[10]${NC} Backup basico"
+    FILA 1  "Crear usuario SSH"        6  "Listar usuarios"
+    FILA 2  "Cambiar clave"            7  "Conexiones online"
+    FILA 3  "Bloquear/Desbloquear"    8  "Desconectar usuario"
+    FILA 4  "Eliminar usuario"        9  "Banner SSH"
+    FILA 5  "Renovar usuario"         10 "Backup basico"
     echo
     echo -e "${BLANCO}--------- WEBMIN / SISTEMA / ACTUALIZACIONES ----------${NC}"
-    echo -e " ${AZUL}[11]${NC} Menu Webmin (instalar) ${AZUL}[13]${NC} Optimizar VPS (BBR)"
-    echo -e " ${AZUL}[12]${NC} Monitoreo              ${AZUL}[14]${NC} Update del sistema"
+    FILA 11 "Menu Webmin (instalar)"  13 "Optimizar VPS (BBR)"
+    FILA 12 "Monitoreo"               14 "Update del sistema"
     echo
     echo -e "${BLANCO}--------- EXTRAS / SEGURIDAD / AUTO-START -----------${NC}"
-    echo -e " ${AZUL}[15]${NC} Comando global (vpsmgr) ${AZUL}[18]${NC} Cambiar puerto SSH"
-    echo -e " ${AZUL}[16]${NC} Limiter SSH (activar)   ${AZUL}[19]${NC} Auto-update del script"
-    echo -e " ${AZUL}[17]${NC} Fail2ban (anti ataque)  ${AZUL}[20]${NC} Quitar limiter"
-    echo -e " ${AZUL}[21]${NC} Ver puertos abiertos    ${AZUL}[22]${NC} Abrir puerto"
-    echo -e " ${AZUL}[23]${NC} Cambiar hostname"
+    FILA 15 "Comando global (vpsmgr)" 18 "Cambiar puerto SSH"
+    FILA 16 "Limiter SSH (activar)"   19 "Auto-update del script"
+    FILA 17 "Fail2ban (anti ataque)"  20 "Quitar limiter"
+    FILA 21 "Ver puertos abiertos"    22 "Abrir puerto"
+    FILA 23 "Cambiar hostname"        "" ""
     echo
     echo -e "${BLANCO}--------- PANEL / HERRAMIENTAS AVANZADAS --------------${NC}"
-    echo -e " ${AZUL}[24]${NC} Crear test SSH (1 dia)  ${AZUL}[27]${NC} Auto-menu al login"
-    echo -e " ${AZUL}[25]${NC} Eliminar vencidos       ${AZUL}[28]${NC} Quitar auto-menu"
-    echo -e " ${AZUL}[26]${NC} Mantenimiento           ${AZUL}[29]${NC} Cambiar limite usuario"
-    echo -e " ${AZUL}[30]${NC} Diagnostico del servidor"
-    echo -e " ${AZUL}[31]${NC} CheckUser API (apps cliente) ${AZUL}[32]${NC} Reiniciar VPS"
-    echo -e " ${AZUL}[0]${NC} Salir"
+    FILA 24 "Crear test SSH (1 dia)"  27 "Auto-menu al login"
+    FILA 25 "Eliminar vencidos"       28 "Quitar auto-menu"
+    FILA 26 "Mantenimiento"           29 "Cambiar limite usuario"
+    FILA 30 "Diagnostico del servidor" "" ""
+    FILA 31 "CheckUser API (apps)"    32 "Reiniciar VPS"
+    echo
+    echo -e "${BLANCO}--------- PROTOCOLOS / CONEXIONES ---------------------${NC}"
+    FILA 33 "Xray (VLESS + Reality)" 34 "OpenVPN"
+    FILA 35 "Estado de protocolos"   36 "SSL (Stunnel puerto 443)"
+    echo
+    echo -e " ${AZUL}[0]${NC}  Salir"
     echo
     read -r -p " INFORME UNA OPCION > " OP
     case "$OP" in
@@ -856,6 +1027,10 @@ while true; do
         30) diagnostico ;;
         31) menu_checkuser ;;
         32) reiniciar_vps ;;
+        33) instalar_xray ;;
+        34) instalar_openvpn ;;
+        35) estado_protocolos ;;
+        36) instalar_ssl_stunnel ;;
         0) echo -e "${VERDE}Hasta luego!${NC}"; exit 0 ;;
         *) ERR "Opcion invalida."; sleep 1 ;;
     esac
