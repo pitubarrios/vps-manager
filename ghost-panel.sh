@@ -251,6 +251,7 @@ FR_MID(){ printf '%b\n' "${AZUL}╠═══════════════
 FR_BOT(){ printf '%b\n' "${AZUL}╚══════════════════════════════════════════════════════════╝${NC}"; }
 FR_TXT(){
     local raw="$1" out="" vis=0 esc
+    raw="${raw//\\033/$'\x1b'}"
     while [[ -n "$raw" ]]; do
         if [[ "$raw" == $'\x1b['* ]]; then
             esc="${raw%%m*}m"; out+="$esc"; raw="${raw#"$esc"}"; continue
