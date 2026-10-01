@@ -22,7 +22,7 @@ PREFIJO_KEY='VPSJB1'   # prefijo de marca; tambien acepta keys viejas VPSMGR1
 REPO_RAW='https://raw.githubusercontent.com/pitubarrios/vps-manager/refs/heads/main/ghost-panel.sh'
 # --- VALIDACION ONLINE (opcional) ---
 # Pone aca la URL de tu Worker de Cloudflare. Vacio = validacion offline (firma local).
-LICENSE_URL='https://vps-licencias.jorgebarriosmpya.workers.dev'
+LICENSE_URL=''
 GRACE_SECS=259200                      # 72h de gracia si el servidor no responde
 LICENSE_CACHE='/etc/vps-license.cache'
 
@@ -493,7 +493,14 @@ instalar_webmin(){
     if command -v ufw >/dev/null 2>&1 && ufw status | grep -q active; then
         ufw allow 10000/tcp >/dev/null 2>&1 && INFO "Puerto 10000/tcp abierto en UFW."
     fi
-    systemctl enable --now webmin 2>/dev/null
+    systemctl enable --now webmin 2>/dev/null || /etc/webmin/start >/dev/null 2>&1
+    sleep 1
+    local WP; WP=$(grep -o '^port=[0-9]*' /etc/webmin/miniserv.conf 2>/dev/null | cut -d= -f2 | head -1); WP=${WP:-10000}
+    if pgrep -f miniserv >/dev/null 2>&1; then
+        OK "Webmin ACTIVO en puerto $WP."
+    else
+        ERR "Webmin quedo detenido. Proba con la opcion 2 (Estado / reiniciar) del menu."
+    fi
     echo
     local IP; IP=$(curl -4 -s --max-time 3 ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')
     OK "Webmin instalado."
@@ -525,7 +532,15 @@ menu_webmin(){
         PROMPT
         case "$OP" in
             1) instalar_webmin ;;
-            2) systemctl status webmin --no-pager -l 2>/dev/null | head -15; PAUSA ;;
+            2) systemctl restart webmin 2>/dev/null || /etc/webmin/start >/dev/null 2>&1
+               sleep 1
+               if pgrep -f miniserv >/dev/null 2>&1; then
+                   local WP; WP=$(grep -o '^port=[0-9]*' /etc/webmin/miniserv.conf 2>/dev/null | cut -d= -f2 | head -1); WP=${WP:-10000}
+                   OK "Webmin corriendo en puerto $WP."
+               else
+                   ERR "Webmin no levanto (¿sin systemd ni /etc/webmin/start?)."
+               fi
+               PAUSA ;;
             3) ufw allow 10000/tcp 2>/dev/null && OK "Puerto abierto." || ERR "UFW no activo."; PAUSA ;;
             4) read -r -p "Nuevo puerto: " P
                sed -i "s/^port=.*/port=$P/" /etc/webmin/miniserv.conf 2>/dev/null
