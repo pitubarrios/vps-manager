@@ -22,7 +22,7 @@ PREFIJO_KEY='VPSJB1'   # prefijo de marca; tambien acepta keys viejas VPSMGR1
 REPO_RAW='https://raw.githubusercontent.com/pitubarrios/vps-manager/refs/heads/main/ghost-panel.sh'
 # --- VALIDACION ONLINE (opcional) ---
 # Pone aca la URL de tu Worker de Cloudflare. Vacio = validacion offline (firma local).
-LICENSE_URL='https://vps-licencias.jorgebarriosmpya.workers.dev'
+LICENSE_URL=''
 GRACE_SECS=259200                      # 72h de gracia si el servidor no responde
 LICENSE_CACHE='/etc/vps-license.cache'
 
@@ -261,10 +261,17 @@ FR_TXT(){
     done
     printf '%b %s%*s %b\n' "${AZUL}║${NC}" "$out" "$((56-vis))" "" "${AZUL}║${NC}"
 }
-FR_OPT(){ FR_TXT "$(printf "  ${AZUL}[%-2s]${NC} %-24s  ${AZUL}[%-2s]${NC} %-18s" "$1" "$2" "$3" "$4")"; }
-SUBTOP(){ FR_TOP; FR_TXT "  ${CIAN}${1}${NC}"; FR_MID; }
-PROMPT(){ read -r -p "  $(echo -e "${CIAN}▸${NC}") $(T t_opcion) > " OP; }
-
+FR_OPT(){
+    if [[ -n "$3" ]]; then
+        FR_TXT "$(printf "  ${AZUL}[%-2s]${NC} %-24s  ${AZUL}[%-2s]${NC} %-18s" "$1" "$2" "$3" "$4")"
+    else
+        FR_TXT "$(printf "  ${AZUL}[%-2s]${NC} %s" "$1" "$2")"
+    fi
+}
+OK(){ echo -e "${VERDE}[OK]${NC} $1"; }
+ERR(){ echo -e "${ROJO}[ERROR]${NC} $1"; }
+INFO(){ echo -e "${CIAN}[INFO]${NC} $1"; }
+WARN(){ echo -e "${AMARILLO}[AVISO]${NC} $1"; }
 FILA(){
     if [[ -n "$3" ]]; then
         printf " ${AZUL}[%-2s]${NC} %-26s ${AZUL}[%-2s]${NC} %s\n" "$1" "$2" "$3" "$4"
@@ -272,9 +279,9 @@ FILA(){
         printf " ${AZUL}[%-2s]${NC} %s\n" "$1" "$2"
     fi
 }
-OK(){ echo -e "${VERDE}[OK]${NC} $1"; }
-ERR(){ echo -e "${ROJO}[ERROR]${NC} $1"; }
-INFO(){ echo -e "${CIAN}[INFO]${NC} $1"; }
+
+SUBTOP(){ FR_TOP; FR_TXT "  ${CIAN}${1}${NC}"; FR_MID; }
+PROMPT(){ read -r -p "  $(echo -e "${CIAN}▸${NC}") $(T t_opcion) > " OP; }
 
 cabecera(){
     clear
