@@ -22,7 +22,7 @@ PREFIJO_KEY='VPSJB1'   # prefijo de marca; tambien acepta keys viejas VPSMGR1
 REPO_RAW='https://raw.githubusercontent.com/pitubarrios/vps-manager/refs/heads/main/ghost-panel.sh'
 # --- VALIDACION ONLINE (opcional) ---
 # Pone aca la URL de tu Worker de Cloudflare. Vacio = validacion offline (firma local).
-LICENSE_URL=''
+LICENSE_URL='https://vps-licencias.jorgebarriosmpya.workers.dev'
 GRACE_SECS=259200                      # 72h de gracia si el servidor no responde
 LICENSE_CACHE='/etc/vps-license.cache'
 
